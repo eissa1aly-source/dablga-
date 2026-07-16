@@ -2,6 +2,8 @@ import gradio as gr
 import requests
 import os
 import traceback
+import base64
+import json
 
 # ============================================================
 # 🔐 جلب المفاتيح من متغيرات البيئة (Secrets)
@@ -66,14 +68,58 @@ def fetch_translations():
         return f"❌ Error: {str(e)[:200]}"
 
 # ============================================================
-# ▶️ تشغيل الـ Workflow عبر Webhook
+# 📤 تشغيل الـ Workflow مع فيديو محلي
 # ============================================================
 
-def run_workflow(video_url):
+def process_local_video(video_file, target_language):
     """
-    تشغيل الـ Workflow عن طريق إرسال طلب إلى Webhook n8n
+    معالجة فيديو محلي وإرساله إلى n8n Webhook
     """
-    # التحقق من صحة الرابط
+    if video_file is None:
+        return "❌ Please upload a video file first"
+    
+    if not N8N_WEBHOOK_URL:
+        return "❌ N8N Webhook not configured. Please add N8N_WEBHOOK_URL to Secrets."
+    
+    try:
+        # قراءة الفيديو وتحويله إلى base64
+        with open(video_file.name, 'rb') as f:
+            video_data = base64.b64encode(f.read()).decode('utf-8')
+        
+        # إرسال الطلب إلى Webhook
+        payload = {
+            'videoData': video_data,
+            'filename': os.path.basename(video_file.name),
+            'targetLanguage': target_language,
+            'sourceType': 'local'
+        }
+        
+        response = requests.post(
+            N8N_WEBHOOK_URL,
+            json=payload,
+            timeout=120
+        )
+        
+        if response.status_code == 200:
+            return f"✅ Video sent to workflow!\n\n📹 File: {os.path.basename(video_file.name)}\n🌍 Target language: {target_language}\n\n⏳ The translation will be processed shortly."
+        else:
+            return f"❌ Error: {response.status_code}\n\n{response.text[:200]}"
+            
+    except requests.exceptions.Timeout:
+        return "⏱️ Request timeout - the workflow took too long to respond"
+    except requests.exceptions.ConnectionError:
+        return "🔌 Connection error - cannot reach the webhook"
+    except Exception as e:
+        return f"❌ Error: {str(e)[:200]}\n\n{traceback.format_exc()[:200]}"
+
+# ============================================================
+# ▶️ تشغيل الـ Workflow مع رابط يوتيوب
+# ============================================================
+
+def run_youtube_workflow(video_url):
+    """
+    تشغيل الـ Workflow عن طريق إرسال طلب إلى Webhook n8n (رابط يوتيوب)
+    """
     if not video_url or not video_url.strip():
         return "❌ Please enter a YouTube URL"
     
@@ -84,17 +130,14 @@ def run_workflow(video_url):
         return "❌ N8N Webhook not configured. Please add N8N_WEBHOOK_URL to Secrets."
     
     try:
-        # إرسال الطلب إلى Webhook
         response = requests.post(
             N8N_WEBHOOK_URL,
-            json={'videoUrl': video_url.strip()},
-            timeout=120  # زيادة المهلة إلى 120 ثانية
+            json={'videoUrl': video_url.strip(), 'sourceType': 'youtube'},
+            timeout=120
         )
         
         if response.status_code == 200:
-            return f"✅ Workflow started successfully!\n\n📹 Video: {video_url}\n\n⏳ The translation will be saved to Supabase shortly."
-        elif response.status_code == 404:
-            return "❌ Webhook not found. Please check your N8N Webhook URL."
+            return f"✅ YouTube workflow started successfully!\n\n📹 Video: {video_url}\n\n⏳ The translation will be saved to Supabase shortly."
         elif response.status_code == 500:
             return "❌ Server error. The video might be unavailable or private. Please try another video."
         else:
@@ -105,7 +148,7 @@ def run_workflow(video_url):
     except requests.exceptions.ConnectionError:
         return "🔌 Connection error - cannot reach the webhook"
     except Exception as e:
-        return f"❌ Error: {str(e)[:200]}\n\n{traceback.format_exc()[:200]}"
+        return f"❌ Error: {str(e)[:200]}"
 
 # ============================================================
 # 📋 اختبار الاتصال بـ Supabase
@@ -139,61 +182,123 @@ def test_supabase():
         return f"❌ Connection error: {str(e)[:100]}"
 
 # ============================================================
-# 🎨 إنشاء الواجهة (Gradio)
+# 🎨 إنشاء الواجهة (Gradio) - تدعم الفيديو المحلي
 # ============================================================
 
 with gr.Blocks(
-    title="N8N Automation Dashboard",
+    title="🎬 Video Translation Dashboard",
     theme=gr.themes.Soft(),
     css="""
-        .gradio-container { max-width: 900px; margin: auto; }
+        .gradio-container { max-width: 950px; margin: auto; }
         .markdown-text { font-size: 14px; }
+        .video-upload { border: 2px dashed #6366f1; border-radius: 10px; padding: 20px; }
     """
 ) as demo:
     
     gr.Markdown("""
-    # ⚙️ N8N Automation Dashboard
+    # 🎬 Video Translation Dashboard
     
-    **Control your video translation workflow**
-    - Enter a YouTube URL and click **Run** to start the translation
-    - Click **Refresh** to see the latest translations from Supabase
+    **Translate videos from YouTube or your device**
+    - Upload a video from your device, or
+    - Enter a YouTube URL
+    - Click **Translate** to start the translation
     """)
     
-    # صف العلوي: تشغيل الـ Workflow
-    with gr.Row():
-        with gr.Column(scale=2):
-            gr.Markdown("### ▶️ Run Workflow")
-            video_input = gr.Textbox(
-                label="YouTube URL",
-                placeholder="https://www.youtube.com/watch?v=...",
-                lines=1
-            )
-            with gr.Row():
-                run_btn = gr.Button("🚀 Run", variant="primary")
-                test_btn = gr.Button("🔍 Test Supabase", variant="secondary", size="sm")
-            
-            run_output = gr.Textbox(label="Result", lines=6, interactive=False)
-            test_output = gr.Textbox(label="Supabase Test", lines=2, interactive=False)
+    # ============================================================
+    # 🔹 قسم الفيديو المحلي
+    # ============================================================
     
-    # صف سفلي: عرض الترجمات
-    with gr.Row():
-        with gr.Column(scale=3):
-            gr.Markdown("### 📝 Latest Translations")
-            refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
-            status_output = gr.Markdown("Click **Refresh** to load data", elem_classes="markdown-text")
+    with gr.Tab("📱 Local Video"):
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("### 📤 Upload Video")
+                video_input = gr.File(
+                    label="Choose a video file",
+                    file_types=[".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv"],
+                    elem_classes="video-upload"
+                )
+                
+                lang_input = gr.Dropdown(
+                    choices=[
+                        ("Arabic", "ar"),
+                        ("English", "en"),
+                        ("Spanish", "es"),
+                        ("French", "fr"),
+                        ("German", "de"),
+                        ("Chinese", "zh"),
+                        ("Japanese", "ja"),
+                        ("Korean", "ko"),
+                        ("Russian", "ru"),
+                        ("Italian", "it"),
+                        ("Portuguese", "pt"),
+                        ("Hindi", "hi")
+                    ],
+                    label="Target Language",
+                    value="ar"
+                )
+                
+                with gr.Row():
+                    translate_local_btn = gr.Button("🚀 Translate Video", variant="primary", size="lg")
+                
+                local_output = gr.Textbox(label="Result", lines=6, interactive=False)
     
-    # ربط الأزرار
-    run_btn.click(
-        fn=run_workflow,
-        inputs=video_input,
-        outputs=run_output
+    # ============================================================
+    # 🔹 قسم يوتيوب
+    # ============================================================
+    
+    with gr.Tab("▶️ YouTube"):
+        with gr.Row():
+            with gr.Column(scale=2):
+                gr.Markdown("### 📹 YouTube Video")
+                youtube_input = gr.Textbox(
+                    label="YouTube URL",
+                    placeholder="https://www.youtube.com/watch?v=...",
+                    lines=1
+                )
+                
+                with gr.Row():
+                    translate_youtube_btn = gr.Button("🚀 Translate YouTube", variant="primary")
+                    test_btn = gr.Button("🔍 Test Supabase", variant="secondary", size="sm")
+                
+                youtube_output = gr.Textbox(label="Result", lines=6, interactive=False)
+                test_output = gr.Textbox(label="Supabase Test", lines=2, interactive=False)
+    
+    # ============================================================
+    # 🔹 عرض الترجمات
+    # ============================================================
+    
+    with gr.Tab("📝 Translations"):
+        with gr.Row():
+            with gr.Column(scale=3):
+                gr.Markdown("### 📝 Latest Translations")
+                refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
+                status_output = gr.Markdown("Click **Refresh** to load data", elem_classes="markdown-text")
+    
+    # ============================================================
+    # 🔗 ربط الأزرار
+    # ============================================================
+    
+    # زر ترجمة الفيديو المحلي
+    translate_local_btn.click(
+        fn=process_local_video,
+        inputs=[video_input, lang_input],
+        outputs=local_output
     )
     
+    # زر ترجمة يوتيوب
+    translate_youtube_btn.click(
+        fn=run_youtube_workflow,
+        inputs=youtube_input,
+        outputs=youtube_output
+    )
+    
+    # زر اختبار Supabase
     test_btn.click(
         fn=test_supabase,
         outputs=test_output
     )
     
+    # زر تحديث الترجمات
     refresh_btn.click(
         fn=fetch_translations,
         outputs=status_output
